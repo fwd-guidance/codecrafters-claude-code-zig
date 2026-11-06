@@ -1,5 +1,43 @@
 const std = @import("std");
 
+pub const Tool = struct {
+    type: []const u8,
+    function: struct {
+        name: []const u8,
+        description: []const u8,
+        parameters: struct {
+            type: []const u8,
+            properties: struct {
+                file_path: struct {
+                    type: []const u8,
+                    description: []const u8,
+                },
+            },
+            required: []const []const u8,
+        }
+    },
+};
+
+pub const ReadTool = Tool{
+    .type = "function",
+    .function = .{
+        .name = "Read",
+        .description = "Read and return the contents of a file",
+        .parameters = .{
+            .type = "object",
+            .properties = .{
+                .file_path = .{
+                    .type = "string",
+                    .description = "The path to the file to read",
+                },
+            },
+            .required = &[_][]const u8{ "file_path" },
+        },
+    },
+};
+
+pub const all_tools = &[_]Tool{ ReadTool };
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
@@ -22,10 +60,11 @@ pub fn main(init: std.process.Init) !void {
     defer body_out.deinit();
     var jw: std.json.Stringify = .{ .writer = &body_out.writer };
     try jw.write(.{
-        .model = "anthropic/claude-haiku-4.5",
+        .model = "anthropic/claude-haiku-5.5",
         .messages = &[_]struct { role: []const u8, content: []const u8 }{
             .{ .role = "user", .content = prompt_str },
         },
+        .tools = all_tools,
     });
     const body = body_out.written();
 
@@ -68,7 +107,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // You can use print statements as follows for debugging, they'll be visible when running tests.
-    std.debug.print("Logs from your program will appear here!\n", .{});
+    //std.debug.print("Logs from your program will appear here!\n", .{});
 
     // TODO: Uncomment the lines below to pass the first stage
     const content = choices.array.items[0].object.get("message").?.object.get("content").?.string;
