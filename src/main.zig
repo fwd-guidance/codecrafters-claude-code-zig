@@ -71,6 +71,6 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Logs from your program will appear here!\n", .{});
 
     // TODO: Uncomment the lines below to pass the first stage
-    // const content = choices.array.items[0].object.get("message").?.object.get("content").?.string;
-    // try std.Io.File.stdout().writeStreamingAll(io, content);
+    const content = choices.array.items[0].object.get("message").?.object.get("content").?.string;
+    try std.Io.File.stdout().writeStreamingAll(io, content);
 }
