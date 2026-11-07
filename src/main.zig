@@ -11,49 +11,66 @@ pub const ToolCall = struct {
 
 pub const Tool = struct {
     type: []const u8,
-    function: struct {
-        name: []const u8,
-        description: []const u8,
-        parameters: struct {
-            type: []const u8,
-            properties: struct {
-                file_path: struct {
-                    type: []const u8,
-                    description: []const u8,
-                },
+    function: struct { name: []const u8, description: []const u8, parameters: struct {
+        type: []const u8,
+        properties: struct {
+            file_path: struct {
+                type: []const u8,
+                description: []const u8,
             },
-            required: []const []const u8,
-        }
-    },
-};
-
-pub const ToolName = enum {
-    Read,
-};
-
-pub const Read = Tool{
-    .type = "function",
-    .function = .{
-        .name = @tagName(ToolName.Read),
-        .description = "Read and return the contents of a file",
-        .parameters = .{
-            .type = "object",
-            .properties = .{
-                .file_path = .{
-                    .type = "string",
-                    .description = "The path to the file to read",
-                },
-            },
-            .required = &[_][]const u8{ "file_path" },
         },
-    },
+        required: []const []const u8,
+    } },
 };
 
-pub const ReadArgs = struct {
-    file_path: []const u8,
+pub const Read = struct {
+    pub const Args = struct {
+        file_path: []const u8,
+    };
+
+    pub const schema = Tool{
+        .type = "function",
+        .function = .{
+            .name = "Read",
+            .description = "Read and return the contents of a file",
+            .parameters = .{
+                .type = "object",
+                .properties = .{
+                    .file_path = .{
+                        .type = "string",
+                        .description = "The path to the file to read",
+                    },
+                },
+                .required = &[_][]const u8{"file_path"},
+            },
+        },
+    };
+
+    pub fn run(io: std.Io, allocator: std.mem.Allocator, tool_call: ToolCall) !void {
+        const parsed_function_arguments = try std.json.parseFromSlice(Read.Args, allocator, tool_call.function.arguments, .{});
+        defer parsed_function_arguments.deinit();
+
+        const file_path = parsed_function_arguments.value.file_path;
+
+        const file_contents = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .unlimited) catch |err| {
+            switch (err) {
+                // TODO: probably want to handle file erorrs
+                else => return err,
+            }
+        };
+        defer allocator.free(file_contents);
+
+        try std.Io.File.stdout().writeStreamingAll(io, file_contents);
+    }
 };
 
-pub const all_tools = &[_]Tool{ Read };
+const tools = .{Read};
+
+pub const all_tools = blk: {
+    var schemas: [tools.len]Tool = undefined;
+    for (tools, 0..) |T, i| schemas[i] = T.schema;
+    break :blk schemas;
+};
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -142,34 +159,14 @@ pub fn main(init: std.process.Init) !void {
         try std.Io.File.stdout().writeStreamingAll(io, content);
     }
 
-    for (tool_calls) |tool_call| {
-        const function_name = std.meta.stringToEnum(ToolName, tool_call.function.name) orelse return error.UnknownTool;
-
-        switch (function_name) {
-            .Read => {
-                const parsed_function_arguments = try std.json.parseFromSlice(ReadArgs, allocator, tool_call.function.arguments, .{});
-                defer parsed_function_arguments.deinit();
-
-                const file_path = parsed_function_arguments.value.file_path;
-
-                const file_contents = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .unlimited) catch |err| {
-                    switch (err) {
-                        // TODO: probably want to handle file erorrs
-                        else => return err,
-                    }
-                };
-                defer allocator.free(file_contents);
-
-                try std.Io.File.stdout().writeStreamingAll(io, file_contents);
-            },
+    blk: for (tool_calls) |tool_call| {
+        const function_name = tool_call.function.name;
+        inline for (tools) |T| {
+            if (std.mem.eql(u8, function_name, T.schema.function.name)) {
+                try T.run(io, allocator, tool_call);
+                continue :blk;
+            }
         }
-
+        return error.UnknownTool;
     }
-
-
-
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    //std.debug.print("Logs from your program will appear here!\n", .{});
-
-    // TODO: Uncomment the lines below to pass the first stage
 }
