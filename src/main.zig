@@ -1,5 +1,14 @@
 const std = @import("std");
 
+pub const ToolCall = struct {
+    id: []const u8,
+    type: []const u8,
+    function: struct {
+        name: []const u8,
+        arguments: []const u8,
+    },
+};
+
 pub const Tool = struct {
     type: []const u8,
     function: struct {
@@ -18,10 +27,14 @@ pub const Tool = struct {
     },
 };
 
-pub const ReadTool = Tool{
+pub const ToolName = enum {
+    Read,
+};
+
+pub const Read = Tool{
     .type = "function",
     .function = .{
-        .name = "Read",
+        .name = @tagName(ToolName.Read),
         .description = "Read and return the contents of a file",
         .parameters = .{
             .type = "object",
@@ -36,7 +49,11 @@ pub const ReadTool = Tool{
     },
 };
 
-pub const all_tools = &[_]Tool{ ReadTool };
+pub const ReadArgs = struct {
+    file_path: []const u8,
+};
+
+pub const all_tools = &[_]Tool{ Read };
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -106,10 +123,53 @@ pub fn main(init: std.process.Init) !void {
         @panic("No choices in response");
     }
 
+    const message = choices.array.items[0].object.get("message") orelse return error.MissingMessage;
+
+    const tool_calls_json = message.object.get("tool_calls") orelse .null;
+
+    const parsed_tool_calls = switch (tool_calls_json) {
+        .null => null,
+        .array => try std.json.parseFromValue([]const ToolCall, allocator, tool_calls_json, .{ .ignore_unknown_fields = true }),
+        else => return error.InvalidToolCalls,
+    };
+
+    defer if (parsed_tool_calls) |parsed_tool_call| parsed_tool_call.deinit();
+
+    const tool_calls: []const ToolCall = if (parsed_tool_calls) |calls| calls.value else &.{};
+
+    if (tool_calls.len == 0) {
+        const content = choices.array.items[0].object.get("message").?.object.get("content").?.string;
+        try std.Io.File.stdout().writeStreamingAll(io, content);
+    }
+
+    for (tool_calls) |tool_call| {
+        const function_name = std.meta.stringToEnum(ToolName, tool_call.function.name) orelse return error.UnknownTool;
+
+        switch (function_name) {
+            .Read => {
+                const parsed_function_arguments = try std.json.parseFromSlice(ReadArgs, allocator, tool_call.function.arguments, .{});
+                defer parsed_function_arguments.deinit();
+
+                const file_path = parsed_function_arguments.value.file_path;
+
+                const file_contents = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .unlimited) catch |err| {
+                    switch (err) {
+                        // TODO: probably want to handle file erorrs
+                        else => return err,
+                    }
+                };
+                defer allocator.free(file_contents);
+
+                try std.Io.File.stdout().writeStreamingAll(io, file_contents);
+            },
+        }
+
+    }
+
+
+
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     //std.debug.print("Logs from your program will appear here!\n", .{});
 
     // TODO: Uncomment the lines below to pass the first stage
-    const content = choices.array.items[0].object.get("message").?.object.get("content").?.string;
-    try std.Io.File.stdout().writeStreamingAll(io, content);
 }
