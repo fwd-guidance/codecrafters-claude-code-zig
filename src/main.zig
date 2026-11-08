@@ -156,6 +156,7 @@ pub fn main(init: std.process.Init) !void {
     const message_json = choices.array.items[0].object.get("message") orelse return error.MissingMessage;
 
     const message = try std.json.parseFromValue(Message, allocator, message_json, .{ .ignore_unknown_fields = true });
+    defer message.deinit();
     try messages.append(allocator, message.value);
 
     const tool_calls_json = message_json.object.get("tool_calls") orelse .null;
