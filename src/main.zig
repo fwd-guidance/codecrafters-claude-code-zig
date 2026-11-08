@@ -178,7 +178,7 @@ pub const Write = struct {
     }
 };
 
-const tools = .{Read};
+const tools = .{Read, Write};
 
 pub const all_tools = blk: {
     var schemas: [tools.len]Tool = undefined;
