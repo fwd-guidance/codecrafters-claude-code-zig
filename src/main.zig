@@ -82,11 +82,15 @@ pub const Tool = struct {
         parameters: struct {
             type: []const u8,
             properties: struct {
-                file_path: struct {
+                file_path: ?struct {
                     type: []const u8,
                     description: []const u8,
-                },
+                } = null,
                 content: ?struct {
+                    type: []const u8,
+                    description: []const u8,
+                } = null,
+                command: ?struct {
                     type: []const u8,
                     description: []const u8,
                 } = null,
@@ -109,10 +113,7 @@ pub const Read = struct {
             .parameters = .{
                 .type = "object",
                 .properties = .{
-                    .file_path = .{
-                        .type = "string",
-                        .description = "The path to the file to read",
-                    },
+                    .file_path = .{ .type = "string", .description = "The path to the file to read" },
                 },
                 .required = &[_][]const u8{"file_path"},
             },
@@ -143,27 +144,14 @@ pub const Write = struct {
         content: []const u8,
     };
 
-    pub const schema = Tool{
-        .type = "function",
-        .function = .{
-            .name = "Write",
-            .description = "Write content to a file",
-            .parameters = .{
-                .type = "object",
-                .properties = .{
-                    .file_path = .{
-                        .type = "string",
-                        .description = "The path of the file to write to"
-                    },
-                    .content = .{
-                        .type = "string",
-                        .description = "The content to write to the file"
-                    },
-                },
-                .required = &[_][]const u8{ "file_path", "content" },
-            }
-        }
-    };
+    pub const schema = Tool{ .type = "function", .function = .{ .name = "Write", .description = "Write content to a file", .parameters = .{
+        .type = "object",
+        .properties = .{
+            .file_path = .{ .type = "string", .description = "The path of the file to write to" },
+            .content = .{ .type = "string", .description = "The content to write to the file" },
+        },
+        .required = &[_][]const u8{ "file_path", "content" },
+    } } };
 
     pub fn run(io: std.Io, allocator: std.mem.Allocator, tool_call: ToolCall) ![]u8 {
         const parsed_function_arguments = try std.json.parseFromSlice(Write.Args, allocator, tool_call.function.arguments, .{});
@@ -178,7 +166,54 @@ pub const Write = struct {
     }
 };
 
-const tools = .{Read, Write};
+pub const Bash = struct {
+    pub const Args = struct {
+        command: []const u8,
+    };
+
+    pub const schema = Tool{ .type = "function", .function = .{ .name = "Bash", .description = "Execute a shell command", .parameters = .{
+        .type = "object",
+        .properties = .{
+            .command = .{ .type = "string", .description = "The command to execute" },
+        },
+        .required = &[_][]const u8{"command"},
+    } } };
+
+    pub fn run(io: std.Io, allocator: std.mem.Allocator, tool_call: ToolCall) ![]u8 {
+        const parsed_function_arguments = try std.json.parseFromSlice(Bash.Args, allocator, tool_call.function.arguments, .{});
+        defer parsed_function_arguments.deinit();
+
+        const command = parsed_function_arguments.value.command;
+        const one_mb: usize = 1024 * 1024;
+
+        const result = std.process.run(allocator, io, .{
+            .argv = &.{ "bash", "-c", command },
+            .stdout_limit = .limited(one_mb),
+            .stderr_limit = .limited(one_mb),
+        }) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return std.fmt.allocPrint(allocator, "Command execution failed: {s}", .{@errorName(err)}),
+        };
+
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+
+        return switch (result.term) {
+            .exited => |code| std.fmt.allocPrint(
+                allocator,
+                "Exit code: {d}\nstdout:\n{s}\nstderr:\n{s}",
+                .{ code, result.stdout, result.stderr },
+            ),
+            else => std.fmt.allocPrint(
+                allocator,
+                "Command terminated: {any}\nstdout:\n{s}\nstderr:\n{s}",
+                .{ result.term, result.stdout, result.stderr },
+            ),
+        };
+    }
+};
+
+const tools = .{ Read, Write, Bash };
 
 pub const all_tools = blk: {
     var schemas: [tools.len]Tool = undefined;
