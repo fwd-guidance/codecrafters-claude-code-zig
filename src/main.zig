@@ -1,10 +1,46 @@
 const std = @import("std");
 
-pub const Message = struct {
-    role: []const u8,
-    content: ?[]const u8 = null,
-    tool_calls: ?[]const ToolCall = null,
-    tool_call_id: ?[]const u8 = null,
+pub const Message = union(enum) {
+    system: struct { content: []const u8 },
+
+    user: struct { content: []const u8 },
+
+    assistant: struct {
+        content: ?[]const u8 = null,
+        tool_calls: ?[]const ToolCall = null,
+    },
+
+    tool: struct {
+        content: []const u8,
+        tool_call_id: []const u8,
+    },
+
+    pub fn jsonStringify(self: Message, jw: *std.json.Stringify) std.Io.Writer.Error!void {
+        const role = @tagName(std.meta.activeTag(self));
+
+        switch (self) {
+            inline .system, .user => |msg| {
+                try jw.write(.{
+                    .role = role,
+                    .content = msg.content,
+                });
+            },
+            .assistant => |msg| {
+                try jw.write(.{
+                    .role = role,
+                    .content = msg.content,
+                    .tool_calls = msg.tool_calls,
+                });
+            },
+            .tool => |msg| {
+                try jw.write(.{
+                    .role = role,
+                    .content = msg.content,
+                    .tool_call_id = msg.tool_call_id,
+                });
+            },
+        }
+    }
 };
 
 pub const ToolCall = struct {
@@ -18,16 +54,20 @@ pub const ToolCall = struct {
 
 pub const Tool = struct {
     type: []const u8,
-    function: struct { name: []const u8, description: []const u8, parameters: struct {
-        type: []const u8,
-        properties: struct {
-            file_path: struct {
-                type: []const u8,
-                description: []const u8,
+    function: struct {
+        name: []const u8,
+        description: []const u8,
+        parameters: struct {
+            type: []const u8,
+            properties: struct {
+                file_path: struct {
+                    type: []const u8,
+                    description: []const u8,
+                },
             },
+            required: []const []const u8,
         },
-        required: []const []const u8,
-    } },
+    },
 };
 
 pub const Read = struct {
@@ -102,8 +142,7 @@ pub fn main(init: std.process.Init) !void {
     var messages: std.ArrayList(Message) = .empty;
     defer messages.deinit(allocator);
 
-    try messages.append(allocator, .{ .role = "user", .content = prompt_str });
-
+    try messages.append(allocator, .{ .user = .{ .content = prompt_str } });
     // Build URL and auth header
     const url_str = try std.fmt.allocPrint(allocator, "{s}/chat/completions", .{base_url});
     defer allocator.free(url_str);
@@ -167,10 +206,15 @@ pub fn main(init: std.process.Init) !void {
         const message = try std.json.parseFromValueLeaky(Message, history_allocator, message_json, .{ .ignore_unknown_fields = true });
         try messages.append(allocator, message);
 
-        const tool_calls: []const ToolCall = message.tool_calls orelse &.{};
+        const assistant = switch (message) {
+            .assistant => |value| value,
+            else => return error.ExpectedAssistantMessage,
+        };
+
+        const tool_calls: []const ToolCall = assistant.tool_calls orelse &.{};
 
         if (tool_calls.len == 0) {
-            if (message.content) |content| {
+            if (assistant.content) |content| {
                 try std.Io.File.stdout().writeStreamingAll(io, content);
             }
             break;
@@ -181,7 +225,7 @@ pub fn main(init: std.process.Init) !void {
             inline for (tools) |T| {
                 if (std.mem.eql(u8, function_name, T.schema.function.name)) {
                     const result = try T.run(io, history_allocator, tool_call);
-                    try messages.append(allocator, .{ .role = "tool", .tool_call_id = tool_call.id, .content = result });
+                    try messages.append(allocator, .{ .tool = .{ .tool_call_id = tool_call.id, .content = result } });
                     continue :blk;
                 }
             }
