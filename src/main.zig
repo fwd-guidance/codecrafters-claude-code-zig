@@ -86,6 +86,10 @@ pub const Tool = struct {
                     type: []const u8,
                     description: []const u8,
                 },
+                content: ?struct {
+                    type: []const u8,
+                    description: []const u8,
+                } = null,
             },
             required: []const []const u8,
         },
@@ -130,6 +134,47 @@ pub const Read = struct {
 
         //try std.Io.File.stdout().writeStreamingAll(io, file_contents);
         return file_contents;
+    }
+};
+
+pub const Write = struct {
+    pub const Args = struct {
+        file_path: []const u8,
+        content: []const u8,
+    };
+
+    pub const schema = Tool{
+        .type = "function",
+        .function = .{
+            .name = "Write",
+            .description = "Write content to a file",
+            .parameters = .{
+                .type = "object",
+                .properties = .{
+                    .file_path = .{
+                        .type = "string",
+                        .description = "The path of the file to write to"
+                    },
+                    .content = .{
+                        .type = "string",
+                        .description = "The content to write to the file"
+                    },
+                },
+                .required = &[_][]const u8{ "file_path", "content" },
+            }
+        }
+    };
+
+    pub fn run(io: std.Io, allocator: std.mem.Allocator, tool_call: ToolCall) ![]u8 {
+        const parsed_function_arguments = try std.json.parseFromSlice(Write.Args, allocator, tool_call.function.arguments, .{});
+        defer parsed_function_arguments.deinit();
+
+        const file_path = parsed_function_arguments.value.file_path;
+        const content = parsed_function_arguments.value.content;
+
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = file_path, .data = content });
+
+        return std.fmt.allocPrint(allocator, "Wrote {d} bytes to {s}.", .{ content.len, file_path });
     }
 };
 
