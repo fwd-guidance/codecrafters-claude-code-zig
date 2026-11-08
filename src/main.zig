@@ -65,7 +65,6 @@ pub const Read = struct {
                 else => return err,
             }
         };
-        defer allocator.free(file_contents);
 
         //try std.Io.File.stdout().writeStreamingAll(io, file_contents);
         return file_contents;
