@@ -84,6 +84,9 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
 
+    // Retain message strings, tool calls, and tool results across iterations.
+    const history_allocator = init.arena.allocator();
+
     var arg_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     defer arg_it.deinit();
 
@@ -97,22 +100,10 @@ pub fn main(init: std.process.Init) !void {
     const api_key = init.environ_map.get("OPENROUTER_API_KEY") orelse @panic("OPENROUTER_API_KEY is not set");
     const base_url = init.environ_map.get("OPENROUTER_BASE_URL") orelse "https://openrouter.ai/api/v1";
 
-    // Build request body
-    var body_out: std.Io.Writer.Allocating = .init(allocator);
-    defer body_out.deinit();
-
     var messages: std.ArrayList(Message) = .empty;
     defer messages.deinit(allocator);
 
     try messages.append(allocator, .{ .role = "user", .content = prompt_str });
-
-    var jw: std.json.Stringify = .{ .writer = &body_out.writer };
-    try jw.write(.{
-        .model = "anthropic/claude-haiku-5.5",
-        .messages = messages.items,
-        .tools = all_tools,
-    });
-    const body = body_out.written();
 
     // Build URL and auth header
     const url_str = try std.fmt.allocPrint(allocator, "{s}/chat/completions", .{base_url});
@@ -128,52 +119,61 @@ pub fn main(init: std.process.Init) !void {
     };
     defer client.deinit();
 
-    var response_out: std.Io.Writer.Allocating = .init(allocator);
-    defer response_out.deinit();
-
     while (true) {
-        _ = try client.fetch(.{
+        // Build request body
+        var body_out: std.Io.Writer.Allocating = .init(allocator);
+        defer body_out.deinit();
+
+        var jw: std.json.Stringify = .{
+            .writer = &body_out.writer,
+            .options = .{ .emit_null_optional_fields = false },
+        };
+        try jw.write(.{
+            .model = "anthropic/claude-haiku-5.5",
+            .messages = messages.items,
+            .tools = all_tools,
+        });
+
+        var response_out: std.Io.Writer.Allocating = .init(allocator);
+        defer response_out.deinit();
+        const response = try client.fetch(.{
             .location = .{ .url = url_str },
             .method = .POST,
-            .payload = body,
+            .payload = body_out.written(),
             .extra_headers = &.{
                 .{ .name = "content-type", .value = "application/json" },
                 .{ .name = "authorization", .value = auth_value },
             },
             .response_writer = &response_out.writer,
         });
+
+        if (response.status != .ok) {
+            std.debug.print("Chat request failed (HTTP {d}): {s}\n", .{
+                @backingInt(response.status), response_out.written(),
+            });
+            return error.ChatRequestFailed;
+        }
         const response_body = response_out.written();
 
         // Parse response
-        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, response_body, .{});
-        defer parsed.deinit();
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, history_allocator, response_body, .{ .allocate = .alloc_always });
 
-        const choices = parsed.value.object.get("choices") orelse @panic("No choices in response");
+        const choices = parsed.object.get("choices") orelse @panic("No choices in response");
         if (choices.array.items.len == 0) {
             @panic("No choices in response");
         }
 
         const message_json = choices.array.items[0].object.get("message") orelse return error.MissingMessage;
 
-        const message = try std.json.parseFromValue(Message, allocator, message_json, .{ .ignore_unknown_fields = true });
-        defer message.deinit();
-        try messages.append(allocator, message.value);
+        const message = try std.json.parseFromValueLeaky(Message, history_allocator, message_json, .{ .ignore_unknown_fields = true });
+        try messages.append(allocator, message);
 
-        const tool_calls_json = message_json.object.get("tool_calls") orelse .null;
-
-        const parsed_tool_calls = switch (tool_calls_json) {
-            .null => null,
-            .array => try std.json.parseFromValue([]const ToolCall, allocator, tool_calls_json, .{ .ignore_unknown_fields = true }),
-            else => return error.InvalidToolCalls,
-        };
-
-        defer if (parsed_tool_calls) |parsed_tool_call| parsed_tool_call.deinit();
-
-        const tool_calls: []const ToolCall = if (parsed_tool_calls) |calls| calls.value else &.{};
+        const tool_calls: []const ToolCall = message.tool_calls orelse &.{};
 
         if (tool_calls.len == 0) {
-            const content = choices.array.items[0].object.get("message").?.object.get("content").?.string;
-            try std.Io.File.stdout().writeStreamingAll(io, content);
+            if (message.content) |content| {
+                try std.Io.File.stdout().writeStreamingAll(io, content);
+            }
             break;
         }
 
@@ -181,7 +181,7 @@ pub fn main(init: std.process.Init) !void {
             const function_name = tool_call.function.name;
             inline for (tools) |T| {
                 if (std.mem.eql(u8, function_name, T.schema.function.name)) {
-                    const result = try T.run(io, allocator, tool_call);
+                    const result = try T.run(io, history_allocator, tool_call);
                     try messages.append(allocator, .{ .role = "tool", .tool_call_id = tool_call.id, .content = result });
                     continue :blk;
                 }
