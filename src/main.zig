@@ -2,11 +2,9 @@ const std = @import("std");
 
 pub const Message = struct {
     role: []const u8,
-    content: []const u8,
-
-    pub fn init() !std.ArrayList(Message) {
-        return .empty;
-    }
+    content: ?[]const u8 = null,
+    tool_calls: ?[]const ToolCall = null,
+    tool_call_id: ?[]const u8 = null,
 };
 
 
@@ -56,7 +54,7 @@ pub const Read = struct {
         },
     };
 
-    pub fn run(io: std.Io, allocator: std.mem.Allocator, tool_call: ToolCall) !void {
+    pub fn run(io: std.Io, allocator: std.mem.Allocator, tool_call: ToolCall) ![]u8 {
         const parsed_function_arguments = try std.json.parseFromSlice(Read.Args, allocator, tool_call.function.arguments, .{});
         defer parsed_function_arguments.deinit();
 
@@ -71,6 +69,7 @@ pub const Read = struct {
         defer allocator.free(file_contents);
 
         try std.Io.File.stdout().writeStreamingAll(io, file_contents);
+        return file_contents;
     }
 };
 
@@ -154,9 +153,12 @@ pub fn main(init: std.process.Init) !void {
         @panic("No choices in response");
     }
 
-    const message = choices.array.items[0].object.get("message") orelse return error.MissingMessage;
+    const message_json = choices.array.items[0].object.get("message") orelse return error.MissingMessage;
 
-    const tool_calls_json = message.object.get("tool_calls") orelse .null;
+    const message = try std.json.parseFromValue(Message, allocator, message_json, .{});
+    try messages.append(allocator, message.value);
+
+    const tool_calls_json = message_json.object.get("tool_calls") orelse .null;
 
     const parsed_tool_calls = switch (tool_calls_json) {
         .null => null,
@@ -177,7 +179,8 @@ pub fn main(init: std.process.Init) !void {
         const function_name = tool_call.function.name;
         inline for (tools) |T| {
             if (std.mem.eql(u8, function_name, T.schema.function.name)) {
-                try T.run(io, allocator, tool_call);
+                const result = try T.run(io, allocator, tool_call);
+                try messages.append(allocator, .{ .role = "tool", .tool_call_id = tool_call.id, .content = result });
                 continue :blk;
             }
         }
