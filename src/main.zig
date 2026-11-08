@@ -41,6 +41,28 @@ pub const Message = union(enum) {
             },
         }
     }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) std.json.ParseFromValueError!@This() {
+        if (source != .object) return error.UnexpectedToken;
+
+        const role = source.object.get("role") orelse
+            return error.MissingField;
+        if (role != .string) return error.UnexpectedToken;
+
+        inline for (@typeInfo(@This()).@"union".fields) |field| {
+            if (std.mem.eql(u8, role.string, field.name)) {
+                const payload = try std.json.parseFromValueLeaky(
+                    field.type,
+                    allocator,
+                    source,
+                    options,
+                );
+                return @unionInit(@This(), field.name, payload);
+            }
+        }
+
+        return error.InvalidEnumTag;
+    }
 };
 
 pub const ToolCall = struct {
