@@ -1,5 +1,15 @@
 const std = @import("std");
 
+pub const Message = struct {
+    role: []const u8,
+    content: []const u8,
+
+    pub fn init() !std.ArrayList(Message) {
+        return .empty;
+    }
+};
+
+
 pub const ToolCall = struct {
     id: []const u8,
     type: []const u8,
@@ -92,12 +102,16 @@ pub fn main(init: std.process.Init) !void {
     // Build request body
     var body_out: std.Io.Writer.Allocating = .init(allocator);
     defer body_out.deinit();
+
+    var messages: std.ArrayList(Message) = .empty;
+    defer messages.deinit(allocator);
+
+    try messages.append(allocator, .{ .role = "user", .content = prompt_str });
+
     var jw: std.json.Stringify = .{ .writer = &body_out.writer };
     try jw.write(.{
         .model = "anthropic/claude-haiku-5.5",
-        .messages = &[_]struct { role: []const u8, content: []const u8 }{
-            .{ .role = "user", .content = prompt_str },
-        },
+        .messages = messages.items,
         .tools = all_tools,
     });
     const body = body_out.written();
