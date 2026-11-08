@@ -49,15 +49,15 @@ pub const Message = union(enum) {
             return error.MissingField;
         if (role != .string) return error.UnexpectedToken;
 
-        inline for (@typeInfo(@This()).@"union".fields) |field| {
-            if (std.mem.eql(u8, role.string, field.name)) {
+        inline for (@typeInfo(@This()).@"union".field_names) |field_name| {
+            if (std.mem.eql(u8, role.string, field_name)) {
                 const payload = try std.json.parseFromValueLeaky(
-                    field.type,
+                    @FieldType(@This(), field_name),
                     allocator,
                     source,
                     options,
                 );
-                return @unionInit(@This(), field.name, payload);
+                return @unionInit(@This(), field_name, payload);
             }
         }
 
